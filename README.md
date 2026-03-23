@@ -28,7 +28,7 @@ cmake -S . -B build \
   -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain.cmake \
   -DTOOLCHAIN_ROOT=sdk/rv110x_ipc_min_sdk_final_20260323/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf \
   -DRK_SDK_ROOT=sdk/rv110x_ipc_min_sdk_final_20260323 \
-  -DBITHION_CORE_SDK_ROOT=/root/work/zh_client_dev/zh_uclibc_linux_client/sdk/bithion-core-sdk
+  -DBITHION_CORE_SDK_ROOT=sdk/bithion-core-sdk
 cmake --build build -j"$(nproc)"
 ```
 
