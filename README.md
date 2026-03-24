@@ -1,6 +1,8 @@
-# zh_uclibc_linux_client
+# 瑞芯微实时语音/视觉交互系统
 
-`zh_uclibc_linux_client` 是上海字嗨科技的语音对话客户端开源仓库。产物是zh_client和zh_ble_gatt_server。
+`rockchip_1106_voice_agent_system` 是上海字嗨科技的语音对话客户端开源仓库。产物是zh_client和zh_ble_gatt_server。
+
+这是一个结合了实时语音，实时AI视觉，人脸识别的交互系统（real-time voice AI vision and face recognition: RTCV SYSTEM)。
 
 本仓库公开的是客户端主程序，完整构建依赖配套提供的 `bithion-core` SDK 包以及rk-sdk环境。
 
@@ -9,7 +11,7 @@
 
 ## 快速开始
 
-我们提供了交付仓库rv1106_zh_clinet_installer,可以快速烧写镜像，安装客户端。
+我们提供了交付仓库[rv1106_zh_clinet_installer](https://github.com/ackaoding-glitch/rockchip_1106_ai_client_installer),可以快速烧写镜像，安装客户端。
 
 如果要从头构建zh_client，可以按以下步骤操作：
 
