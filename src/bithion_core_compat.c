@@ -935,10 +935,18 @@ void zh_core_uplink_stop(void) {
 
 // 通知 core 开启新一轮上行语音并发送 START。
 int zh_core_uplink_begin_segment(void) {
+    int rc = 0;
+
     if (!g_core) {
         return -1;
     }
-    return bithion_core_uplink_begin_segment(g_core);
+    rc = bithion_core_uplink_begin_segment(g_core);
+    if (rc == 0) {
+        pthread_mutex_lock(&g_ws_session.mutex);
+        zh_ws_reset_round_state_locked(&g_ws_session);
+        pthread_mutex_unlock(&g_ws_session.mutex);
+    }
+    return rc;
 }
 
 // 向 core 提交一帧客户端已编码的 Opus 数据。
