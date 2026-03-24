@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "audio_playback_rockit.h"
 #include "config.h"
@@ -19,9 +20,28 @@ struct zh_ao_playback {
     unsigned int in_rate;
     unsigned int in_channels;
     int resample_enabled;
+    int soft_flushed;
 };
 
 static int g_sys_inited = 0;
+
+#define ZH_RK_AO_SOFT_FLUSH_WAIT_US 20000
+
+static int zh_rk_ao_set_mute(AUDIO_DEV dev, RK_BOOL enable, RK_BOOL fade_enable) {
+    AUDIO_FADE_S fade;
+
+    memset(&fade, 0, sizeof(fade));
+    fade.bFade = fade_enable;
+    fade.enFadeInRate = AUDIO_FADE_RATE_8;
+    fade.enFadeOutRate = AUDIO_FADE_RATE_8;
+    RK_S32 ret = RK_MPI_AO_SetMute(dev, enable, &fade);
+    if (ret != RK_SUCCESS) {
+        LOGE(__func__, "RK_MPI_AO_SetMute failed: dev=%d enable=%d fade=%d ret=%d",
+             dev, enable ? 1 : 0, fade_enable ? 1 : 0, ret);
+        return -1;
+    }
+    return 0;
+}
 
 static AUDIO_SAMPLE_RATE_E zh_rk_map_rate(unsigned int rate) {
     switch (rate) {
@@ -113,6 +133,7 @@ int zh_ao_playback_open(zh_ao_playback_t **out, unsigned int in_rate, unsigned i
         free(pb);
         return -1;
     }
+    (void)zh_rk_ao_set_mute(pb->dev, RK_FALSE, RK_FALSE);
 
     if (in_rate != ZH_TTS_SAMPLE_RATE) {
         ret = RK_MPI_AO_EnableReSmp(pb->dev, pb->chn, zh_rk_map_rate(in_rate));
@@ -134,52 +155,34 @@ int zh_ao_playback_write(zh_ao_playback_t *pb, const int16_t *pcm, size_t frames
         return -1;
     }
 
-    int16_t *stereo_pcm = NULL;
-    const int16_t *send_pcm = pcm;
-    unsigned int send_channels = pb->in_channels;
-    if (pb->in_channels == 1) {
-        stereo_pcm = (int16_t *)malloc(frames * 2 * sizeof(int16_t));
-        if (!stereo_pcm) {
-            return -1;
-        }
-        for (size_t i = 0; i < frames; ++i) {
-            int16_t s = pcm[i];
-            stereo_pcm[i * 2] = s;
-            stereo_pcm[i * 2 + 1] = s;
-        }
-        send_pcm = stereo_pcm;
-        send_channels = 2;
-    }
-
     AUDIO_FRAME_S frame;
     memset(&frame, 0, sizeof(frame));
-    frame.u32Len = (RK_U32)(frames * send_channels * sizeof(int16_t));
+    frame.u32Len = (RK_U32)(frames * pb->in_channels * sizeof(int16_t));
     frame.u64TimeStamp = 0;
     frame.s32SampleRate = (RK_S32)pb->in_rate;
     frame.enBitWidth = AUDIO_BIT_WIDTH_16;
-    frame.enSoundMode = (send_channels == 1) ? AUDIO_SOUND_MODE_MONO : AUDIO_SOUND_MODE_STEREO;
+    frame.enSoundMode = (pb->in_channels == 1) ? AUDIO_SOUND_MODE_MONO : AUDIO_SOUND_MODE_STEREO;
     frame.bBypassMbBlk = RK_FALSE;
 
     MB_EXT_CONFIG_S extConfig;
     memset(&extConfig, 0, sizeof(extConfig));
-    extConfig.pOpaque = (void *)send_pcm;
-    extConfig.pu8VirAddr = (RK_U8 *)send_pcm;
+    extConfig.pOpaque = (void *)pcm;
+    extConfig.pu8VirAddr = (RK_U8 *)pcm;
     extConfig.u64Size = frame.u32Len;
 
     RK_S32 ret = RK_MPI_SYS_CreateMB(&(frame.pMbBlk), &extConfig);
     if (ret != RK_SUCCESS) {
         LOGE(__func__, "RK_MPI_SYS_CreateMB failed: %d", ret);
-        free(stereo_pcm);
         return -1;
     }
 
     ret = RK_MPI_AO_SendFrame(pb->dev, pb->chn, &frame, -1);
     RK_MPI_MB_ReleaseMB(frame.pMbBlk);
-    free(stereo_pcm);
     if (ret != RK_SUCCESS) {
         LOGE(__func__, "RK_MPI_AO_SendFrame failed: %d", ret);
         return -1;
     }
+    pb->soft_flushed = 0;
     return 0;
 }
 
@@ -191,11 +194,19 @@ void zh_ao_playback_drain(zh_ao_playback_t *pb) {
 
 void zh_ao_playback_flush(zh_ao_playback_t *pb) {
     if (!pb) return;
+    if (!pb->soft_flushed) {
+        if (zh_rk_ao_set_mute(pb->dev, RK_TRUE, RK_TRUE) == 0) {
+            usleep(ZH_RK_AO_SOFT_FLUSH_WAIT_US);
+        }
+        pb->soft_flushed = 1;
+    }
     RK_MPI_AO_ClearChnBuf(pb->dev, pb->chn);
+    (void)zh_rk_ao_set_mute(pb->dev, RK_FALSE, RK_FALSE);
 }
 
 void zh_ao_playback_close(zh_ao_playback_t *pb) {
     if (!pb) return;
+    (void)zh_rk_ao_set_mute(pb->dev, RK_FALSE, RK_FALSE);
     if (pb->resample_enabled) {
         RK_MPI_AO_DisableReSmp(pb->dev, pb->chn);
     }

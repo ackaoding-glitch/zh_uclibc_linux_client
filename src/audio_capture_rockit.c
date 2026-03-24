@@ -24,6 +24,7 @@ struct zh_audio_capture {
     unsigned int dev_channels;
     unsigned int out_channels;
     int vqe_enabled;
+    int first_frame_logged;
     int started;
     int16_t *stash;
     size_t stash_cap;
@@ -40,6 +41,34 @@ static void zh_rk_apply_ai_defaults(AUDIO_DEV dev) {
         LOGE(__func__, "RK_MPI_AI_SetVolume failed: dev=%d volume=100", dev);
     } else {
         LOGI(__func__, "AI capture defaults applied: dev=%d mute=0 volume=100", dev);
+    }
+}
+
+static void zh_rk_apply_ai_vqe_modules(AUDIO_DEV dev, AI_CHN chn) {
+    AI_VQE_MOD_ENABLE_S mods;
+
+    memset(&mods, 0, sizeof(mods));
+    mods.bAec = RK_TRUE;
+    mods.bBf = RK_TRUE;
+    mods.bFastAec = RK_TRUE;
+    mods.bAes = RK_TRUE;
+    mods.bWakeup = RK_FALSE;
+    mods.bGsc = RK_FALSE;
+    mods.bAgc = RK_TRUE;
+    mods.bAnr = RK_TRUE;
+    mods.bNlp = RK_FALSE;
+    mods.bDereverb = RK_TRUE;
+    mods.bCng = RK_FALSE;
+    mods.bDtd = RK_TRUE;
+    mods.bEq = RK_FALSE;
+    mods.bHowling = RK_TRUE;
+    mods.bDoa = RK_FALSE;
+
+    RK_S32 ret = RK_MPI_AI_SetVqeModuleEnable(dev, chn, &mods);
+    if (ret != RK_SUCCESS) {
+        LOGE(__func__, "RK_MPI_AI_SetVqeModuleEnable failed: dev=%d chn=%d ret=%d", dev, chn, ret);
+    } else {
+        LOGI(__func__, "AI VQE modules applied: aec=1 fast_aec=1 aes=1 agc=1 anr=1 dereverb=1 dtd=1 howl=1");
     }
 }
 
@@ -200,6 +229,8 @@ int zh_audio_capture_init(zh_audio_capture_t **cap,
     vqe.s64ChannelLayoutType = ZH_RK_CH_LAYOUT;
     strncpy(vqe.aCfgFile, ZH_RK_AIVQE_CONFIG_PATH, sizeof(vqe.aCfgFile) - 1);
 
+    zh_rk_apply_ai_vqe_modules(ctx->dev, ctx->chn);
+
     RK_S32 vqe_ret = RK_MPI_AI_SetVqeAttr(ctx->dev, ctx->chn, ZH_RK_AO_DEV, ZH_RK_AO_CHN, &vqe);
     if (vqe_ret != RK_SUCCESS) {
         LOGE(__func__, "RK_MPI_AI_SetVqeAttr failed: %d", vqe_ret);
@@ -255,11 +286,11 @@ int zh_audio_capture_init(zh_audio_capture_t **cap,
     }
 
     if (ctx->out_channels == 1) {
-        RK_S32 tm_ret = RK_MPI_AI_SetTrackMode(ctx->dev, AUDIO_TRACK_OUT_STEREO);
+        RK_S32 tm_ret = RK_MPI_AI_SetTrackMode(ctx->dev, AUDIO_TRACK_FRONT_LEFT);
         if (tm_ret != RK_SUCCESS) {
             LOGE(__func__, "RK_MPI_AI_SetTrackMode failed: %d", tm_ret);
         } else {
-            LOGI(__func__, "RK_MPI_AI_SetTrackMode ok: AUDIO_TRACK_OUT_STEREO");
+            LOGI(__func__, "RK_MPI_AI_SetTrackMode ok: AUDIO_TRACK_FRONT_LEFT");
         }
     } else {
         LOGI(__func__, "RK_MPI_AI_SetTrackMode: skip (keep normal)");
@@ -292,7 +323,6 @@ int zh_audio_capture_read(zh_audio_capture_t *cap, int16_t *buffer, size_t sampl
         return -1;
     }
 
-    static int logged = 0;
     size_t need = samples;
     size_t loops = 0;
     while (cap->stash_len < need) {
@@ -326,18 +356,24 @@ int zh_audio_capture_read(zh_audio_capture_t *cap, int16_t *buffer, size_t sampl
         RK_U32 mb_bytes = RK_MPI_MB_GetSize(frame.pMbBlk);
         size_t in_samples_per_ch = frame.u32Len / sizeof(int16_t);
         if (in_samples_per_ch == 0) {
-            if (!logged) {
-                LOGE(__func__, "empty frame: u32Len=%u mb_bytes=%u seq=%u soundmode=%d",
-                     frame.u32Len, mb_bytes, frame.u32Seq, frame.enSoundMode);
-                logged = 1;
-            }
+            LOGE(__func__, "empty frame: u32Len=%u mb_bytes=%u seq=%u soundmode=%d",
+                 frame.u32Len, mb_bytes, frame.u32Seq, frame.enSoundMode);
             RK_MPI_AI_ReleaseFrame(cap->dev, cap->chn, &frame, &aec);
             return -1;
         }
-        if (!logged) {
-            LOGI(__func__, "first frame: u32Len=%u mb_bytes=%u seq=%u soundmode=%d out_ch=%u",
-                 frame.u32Len, mb_bytes, frame.u32Seq, frame.enSoundMode, cap->out_channels);
-            logged = 1;
+        if (!cap->first_frame_logged) {
+            RK_U32 ref_mb_bytes = 0;
+            if (aec.bValid && aec.stRefFrame.pMbBlk) {
+                ref_mb_bytes = RK_MPI_MB_GetSize(aec.stRefFrame.pMbBlk);
+            }
+            LOGI(__func__,
+                 "first frame: u32Len=%u mb_bytes=%u seq=%u soundmode=%d out_ch=%u aec_valid=%d ref_len=%u ref_mb_bytes=%u ref_soundmode=%d",
+                 frame.u32Len, mb_bytes, frame.u32Seq, frame.enSoundMode, cap->out_channels,
+                 aec.bValid ? 1 : 0,
+                 aec.bValid ? aec.stRefFrame.u32Len : 0,
+                 ref_mb_bytes,
+                 aec.bValid ? aec.stRefFrame.enSoundMode : -1);
+            cap->first_frame_logged = 1;
         }
 
         size_t append_samples = in_samples_per_ch * ZH_AUDIO_CHANNELS;
