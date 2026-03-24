@@ -18,6 +18,8 @@
 static volatile int g_tts_play_running = 0;
 static volatile int g_tts_flush_pending = 0;
 static volatile int g_tts_playing = 0;
+static volatile int g_tts_drop_stale_pending = 0;
+static volatile uint32_t g_tts_interrupt_generation = 0;
 static pthread_t g_tts_play_thread;
 static zh_ws_session_t *g_tts_ws = NULL;
 static uint64_t g_tts_last_audio_ms = 0;
@@ -42,6 +44,13 @@ static void zh_tts_release_playback(zh_ao_playback_t **play_ref, int drain) {
     pthread_mutex_unlock(&g_tts_playback_mutex);
     g_tts_last_audio_ms = 0;
     g_tts_playing = 0;
+}
+
+static void zh_tts_reset_decoder(OpusDecoder *decoder) {
+    if (!decoder) {
+        return;
+    }
+    (void)opus_decoder_ctl(decoder, OPUS_RESET_STATE);
 }
 
 static void zh_tts_process_opus(OpusDecoder *decoder,
@@ -104,16 +113,21 @@ static void *zh_udp_tts_play_thread_main(void *arg) {
     while (g_tts_play_running) {
         size_t opus_len = 0;
         int ret = 0;
+        uint32_t read_generation = 0;
 
         if (g_tts_flush_pending) {
             zh_tts_release_playback(&playback, 0);
-            opus_decoder_ctl(decoder, OPUS_RESET_STATE);
+            zh_tts_reset_decoder(decoder);
             g_tts_flush_pending = 0;
         }
 
+        read_generation = g_tts_interrupt_generation;
         ret = zh_core_tts_read_opus(opus_frame, sizeof(opus_frame), &opus_len, 100);
         if (!g_tts_play_running) {
             break;
+        }
+        if (read_generation != g_tts_interrupt_generation) {
+            continue;
         }
 
         if (ret < 0) {
@@ -125,10 +139,17 @@ static void *zh_udp_tts_play_thread_main(void *arg) {
             int has_pending = zh_core_tts_transport_has_pending_data();
             uint64_t now_ms = zh_now_ms();
 
+            if (g_tts_drop_stale_pending && !has_pending) {
+                LOGI(__func__, "interrupt drain finished, accept new round audio");
+                zh_tts_reset_decoder(decoder);
+                g_tts_drop_stale_pending = 0;
+            }
+
             if (playback && !has_pending && g_tts_last_audio_ms != 0 &&
                 now_ms - g_tts_last_audio_ms >= ZH_TTS_IDLE_TIMEOUT_MS) {
                 LOGI(__func__, "tts idle timeout, release playback");
                 zh_tts_release_playback(&playback, 1);
+                zh_tts_reset_decoder(decoder);
             }
 
             if (g_tts_ws && zh_udp_tts_is_round_done()) {
@@ -147,8 +168,12 @@ static void *zh_udp_tts_play_thread_main(void *arg) {
 
         if (g_tts_flush_pending) {
             zh_tts_release_playback(&playback, 0);
-            opus_decoder_ctl(decoder, OPUS_RESET_STATE);
+            zh_tts_reset_decoder(decoder);
             g_tts_flush_pending = 0;
+            continue;
+        }
+
+        if (g_tts_drop_stale_pending) {
             continue;
         }
 
@@ -177,15 +202,22 @@ static void *zh_udp_tts_play_thread_main(void *arg) {
         while (g_tts_play_running) {
             if (g_tts_flush_pending) {
                 zh_tts_release_playback(&playback, 0);
-                opus_decoder_ctl(decoder, OPUS_RESET_STATE);
+                zh_tts_reset_decoder(decoder);
                 g_tts_flush_pending = 0;
                 break;
             }
 
             opus_len = 0;
+            read_generation = g_tts_interrupt_generation;
             ret = zh_core_tts_read_opus(opus_frame, sizeof(opus_frame), &opus_len, 0);
+            if (read_generation != g_tts_interrupt_generation) {
+                continue;
+            }
             if (ret <= 0) {
                 break;
+            }
+            if (g_tts_drop_stale_pending) {
+                continue;
             }
             if (opus_len > 0) {
                 zh_tts_process_opus(decoder, playback, opus_frame, opus_len);
@@ -196,6 +228,7 @@ static void *zh_udp_tts_play_thread_main(void *arg) {
             !zh_core_tts_transport_has_pending_data()) {
             LOGI(__func__, "tts round done, release playback");
             zh_tts_release_playback(&playback, 1);
+            zh_tts_reset_decoder(decoder);
             if (zh_udp_tts_is_round_done()) {
                 zh_core_ws_on_tts_round_done();
             }
@@ -226,6 +259,8 @@ int zh_udp_tts_start(const zh_config_t *cfg, zh_ws_session_t *ws) {
 
     g_tts_flush_pending = 0;
     g_tts_playing = 0;
+    g_tts_drop_stale_pending = 0;
+    g_tts_interrupt_generation = 0;
     g_tts_last_audio_ms = 0;
     g_tts_open_fail_log_ms = 0;
     g_tts_play_running = 1;
@@ -243,6 +278,7 @@ void zh_udp_tts_stop(void) {
     g_tts_play_running = 0;
     g_tts_flush_pending = 1;
     g_tts_playing = 0;
+    g_tts_drop_stale_pending = 0;
     zh_core_tts_transport_stop();
 }
 
@@ -267,6 +303,8 @@ int zh_udp_tts_wait(int timeout_ms) {
 void zh_udp_tts_interrupt(void) {
     g_tts_flush_pending = 1;
     g_tts_playing = 0;
+    g_tts_drop_stale_pending = 1;
+    g_tts_interrupt_generation++;
     g_tts_last_audio_ms = 0;
 
     pthread_mutex_lock(&g_tts_playback_mutex);
