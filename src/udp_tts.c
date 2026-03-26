@@ -20,6 +20,8 @@ static volatile int g_tts_flush_pending = 0;
 static volatile int g_tts_playing = 0;
 static volatile int g_tts_drop_stale_pending = 0;
 static volatile uint32_t g_tts_interrupt_generation = 0;
+static volatile uint64_t g_tts_packet_count = 0;
+static volatile int32_t g_tts_packet_chat_count = -1;
 static pthread_t g_tts_play_thread;
 static zh_ws_session_t *g_tts_ws = NULL;
 static uint64_t g_tts_last_audio_ms = 0;
@@ -87,8 +89,25 @@ static void zh_tts_process_opus(OpusDecoder *decoder,
     }
     pthread_mutex_lock(&g_tts_playback_mutex);
     if (playback == g_tts_active_playback && !g_tts_flush_pending && g_tts_play_running) {
+        uint64_t now_ms = zh_now_ms();
+        int stt_chat_count = -1;
+        uint32_t chat_count_tmp = 0;
+        if (g_tts_ws && zh_ws_get_stt_completed_chat_count(g_tts_ws, &chat_count_tmp) == 0) {
+            stt_chat_count = (int)chat_count_tmp;
+        }
+        if (stt_chat_count >= 0 && g_tts_packet_chat_count != stt_chat_count) {
+            g_tts_packet_chat_count = stt_chat_count;
+            g_tts_packet_count = 0;
+        }
+        uint64_t pkt_idx = ++g_tts_packet_count;
         g_tts_playing = 1;
-        g_tts_last_audio_ms = zh_now_ms();
+        g_tts_last_audio_ms = now_ms;
+        LOGD(__func__,
+             "tts play pkt: ts_ms=%llu stt_chat_count=%d pkt_idx=%llu pkt_src=local opus_len=%zu",
+             (unsigned long long)now_ms,
+             stt_chat_count,
+             (unsigned long long)pkt_idx,
+             opus_len);
         (void)zh_ao_playback_write(playback, pcm, (size_t)samples);
     }
     pthread_mutex_unlock(&g_tts_playback_mutex);
@@ -261,6 +280,8 @@ int zh_udp_tts_start(const zh_config_t *cfg, zh_ws_session_t *ws) {
     g_tts_playing = 0;
     g_tts_drop_stale_pending = 0;
     g_tts_interrupt_generation = 0;
+    g_tts_packet_count = 0;
+    g_tts_packet_chat_count = -1;
     g_tts_last_audio_ms = 0;
     g_tts_open_fail_log_ms = 0;
     g_tts_play_running = 1;
@@ -306,6 +327,8 @@ void zh_udp_tts_interrupt(void) {
     g_tts_drop_stale_pending = 1;
     g_tts_interrupt_generation++;
     g_tts_last_audio_ms = 0;
+    g_tts_packet_count = 0;
+    g_tts_packet_chat_count = -1;
 
     pthread_mutex_lock(&g_tts_playback_mutex);
     if (g_tts_active_playback) {
