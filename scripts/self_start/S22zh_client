@@ -1,0 +1,31 @@
+#!/bin/sh
+DEBUG_LOG="/tmp/zh_startup_debug.log"
+
+log_debug() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [S22zh_client] $*" >>"$DEBUG_LOG"
+}
+
+case "$1" in
+  start|"")
+    log_debug "argv=start, sleep 3 then call start_zh_client.sh start"
+    (
+      sleep 3
+      log_debug "sleep 3 done, exec start_zh_client.sh start"
+      /bin/sh /data/zh_work/start_zh_client.sh start
+    ) &
+    ;;
+  stop)
+    log_debug "argv=stop"
+    /bin/sh /data/zh_work/start_zh_client.sh stop
+    ;;
+  restart)
+    log_debug "argv=restart"
+    /bin/sh /data/zh_work/start_zh_client.sh restart
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
+
+exit 0

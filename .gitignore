@@ -1,0 +1,59 @@
+# C/C++ build artifacts
+*.o
+*.obj
+#*.a #这里用静态编译，.a纳入git管理
+# *.lib
+# *.so
+# *.so.*
+*.dll
+*.exe
+*.out
+*.elf
+*.map
+*.d
+*.pch
+*.gch
+
+# Debugging/profiling
+*.dSYM/
+*.gcno
+*.gcda
+*.gcov
+*.profraw
+*.profdata
+
+# CMake
+/build/
+build-deps/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+
+# Editor/IDE
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# core-sdk
+core-sdk/
+
+
+# plans
+plans/
+tmp/
+
+# sdk
+sdk/
+
+# 分发物（构建镜像/发布包，见 docker/build_image.sh 与 scripts/docker_build.sh）
+*.tar.gz
+*.tgz
+
+!third_party/prebuilt/
+!third_party/prebuilt/**

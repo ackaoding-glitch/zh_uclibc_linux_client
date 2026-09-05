@@ -1,0 +1,7 @@
+#ifndef ZH_VERSION_H
+#define ZH_VERSION_H
+
+#define ZH_APP_VERSION "@ZH_APP_VERSION@"
+#define ZH_GIT_SHA "@ZH_GIT_SHA@"
+
+#endif
